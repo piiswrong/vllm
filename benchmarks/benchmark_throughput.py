@@ -1,4 +1,5 @@
 """Benchmark offline inference throughput."""
+import string
 import argparse
 import json
 import random
@@ -12,6 +13,18 @@ from tqdm import tqdm
 
 from vllm import LLM, SamplingParams
 
+def seed_everything(seed: int):
+    import random, os
+    import numpy as np
+    import torch
+    
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    
+seed_everything(42)
 
 def get_tokenizer(model_name: str) -> PreTrainedTokenizerBase:
     config = AutoConfig.from_pretrained(model_name)
@@ -24,52 +37,68 @@ def get_tokenizer(model_name: str) -> PreTrainedTokenizerBase:
         return tokenizer
     return AutoTokenizer.from_pretrained(model_name)
 
+# def sample_requests(
+#     dataset_path: str,
+#     num_requests: int,
+#     tokenizer: PreTrainedTokenizerBase,
+# ) -> List[Tuple[str, int, int]]:
+#     # Load the dataset.
+#     with open(dataset_path) as f:
+#         dataset = json.load(f)
+#     # Filter out the conversations with less than 2 turns.
+#     dataset = [
+#         data for data in dataset
+#         if len(data["conversations"]) >= 2
+#     ]
+#     # Only keep the first two turns of each conversation.
+#     dataset = [
+#         (data["conversations"][0]["value"], data["conversations"][1]["value"])
+#         for data in dataset
+#     ]
+
+#     # Tokenize the prompts and completions.
+#     prompts = [prompt for prompt, _ in dataset]
+#     prompt_token_ids = tokenizer(prompts).input_ids
+#     completions = [completion for _, completion in dataset]
+#     completion_token_ids = tokenizer(completions).input_ids
+#     tokenized_dataset = []
+#     for i in range(len(dataset)):
+#         output_len = len(completion_token_ids[i])
+#         tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
+
+#     # Filter out too long sequences.
+#     filtered_dataset: List[Tuple[str, int, int]] = []
+#     for prompt, prompt_token_ids, output_len in tokenized_dataset:
+#         prompt_len = len(prompt_token_ids)
+#         if prompt_len < 4 or output_len < 4:
+#             # Prune too short sequences.
+#             continue
+#         if prompt_len > 1024 or prompt_len + output_len > 2048:
+#             # Prune too long sequences.
+#             continue
+#         filtered_dataset.append((prompt, prompt_len, output_len))
+
+#     # Sample the requests.
+#     sampled_requests = random.sample(filtered_dataset, num_requests)
+#     return sampled_requests
 
 def sample_requests(
     dataset_path: str,
     num_requests: int,
     tokenizer: PreTrainedTokenizerBase,
 ) -> List[Tuple[str, int, int]]:
-    # Load the dataset.
-    with open(dataset_path) as f:
-        dataset = json.load(f)
-    # Filter out the conversations with less than 2 turns.
-    dataset = [
-        data for data in dataset
-        if len(data["conversations"]) >= 2
-    ]
-    # Only keep the first two turns of each conversation.
-    dataset = [
-        (data["conversations"][0]["value"], data["conversations"][1]["value"])
-        for data in dataset
-    ]
+    res = []
+    for _ in range(num_requests):
+        # prompt = ''.join(
+        #     random.choices(
+        #         string.ascii_uppercase + string.digits,
+        #         k=random.randint(args.min_prompt_len, args.max_prompt_len)))
+        prompt = '!' * random.randint(args.min_prompt_len, args.max_prompt_len)
+        prompt_len = len(tokenizer(prompt).input_ids)
+        output_len = random.randint(args.min_response_len, args.max_response_len)
+        res.append((prompt, prompt_len, output_len))
 
-    # Tokenize the prompts and completions.
-    prompts = [prompt for prompt, _ in dataset]
-    prompt_token_ids = tokenizer(prompts).input_ids
-    completions = [completion for _, completion in dataset]
-    completion_token_ids = tokenizer(completions).input_ids
-    tokenized_dataset = []
-    for i in range(len(dataset)):
-        output_len = len(completion_token_ids[i])
-        tokenized_dataset.append((prompts[i], prompt_token_ids[i], output_len))
-
-    # Filter out too long sequences.
-    filtered_dataset: List[Tuple[str, int, int]] = []
-    for prompt, prompt_token_ids, output_len in tokenized_dataset:
-        prompt_len = len(prompt_token_ids)
-        if prompt_len < 4 or output_len < 4:
-            # Prune too short sequences.
-            continue
-        if prompt_len > 1024 or prompt_len + output_len > 2048:
-            # Prune too long sequences.
-            continue
-        filtered_dataset.append((prompt, prompt_len, output_len))
-
-    # Sample the requests.
-    sampled_requests = random.sample(filtered_dataset, num_requests)
-    return sampled_requests
-
+    return res
 
 def run_vllm(
     requests: List[Tuple[str, int, int]],
@@ -83,6 +112,9 @@ def run_vllm(
         model=model,
         tensor_parallel_size=tensor_parallel_size,
         seed=seed,
+        use_dummy_weights=True,
+        max_num_seqs=args.batch_size,
+        max_num_batched_tokens=args.batch_size * (args.max_prompt_len + args.max_response_len + 1),
     )
 
     # Add the requests to the engine.
@@ -202,11 +234,16 @@ if __name__ == "__main__":
     parser.add_argument("--n", type=int, default=1,
                         help="Number of generated sequences per prompt.")
     parser.add_argument("--use-beam-search", action="store_true")
-    parser.add_argument("--num-prompts", type=int, default=1000,
+    parser.add_argument("--num-prompts", type=int, default=200,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hf-max-batch-size", type=int, default=None,
                         help="Maximum batch size for HF backend.")
+    parser.add_argument("--batch-size", type=int, default=24)
+    parser.add_argument("--min-prompt-len", type=int, default=128)
+    parser.add_argument("--max-prompt-len", type=int, default=256)
+    parser.add_argument("--min-response-len", type=int, default=256)
+    parser.add_argument("--max-response-len", type=int, default=512)
     args = parser.parse_args()
     if args.backend == "vllm":
         if args.hf_max_batch_size is not None:

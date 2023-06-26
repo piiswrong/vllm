@@ -200,7 +200,7 @@ def initialize_all_reduce_launcher(
     max_num_tokens: int,
     hidden_size: int,
     dtype: torch.dtype,
-    disable_graph: bool = False,
+    disable_graph: bool = True,
 ) -> None:
     global _ALL_REDUCE_LAUNCHER
     _ALL_REDUCE_LAUNCHER = GraphAllReduce(
@@ -524,7 +524,7 @@ class GraphAllReduce:
         max_num_tokens: int,
         hidden_size: int,
         dtype: torch.dtype,
-        disable_graph: bool = False,
+        disable_graph: bool = True,
     ) -> None:
         self.max_num_tokens = max_num_tokens
         self.hidden_size = hidden_size
@@ -542,7 +542,7 @@ class GraphAllReduce:
         )
 
         # Build graphs for different number of tokens.
-        if not self.disable_graph:
+        if False and not self.disable_graph:
             self.graphs = {}
             for num_tokens in range(8, max_num_tokens + 1, 8):
                 self.graphs[num_tokens] = self._build_graph(num_tokens)
@@ -563,7 +563,7 @@ class GraphAllReduce:
     def launch(self, x: torch.Tensor) -> torch.Tensor:
         # NOTE: x must be a slice of self.buffer.
         num_tokens = x.shape[0]
-        if self.disable_graph:
+        if True or self.disable_graph:
             torch.distributed.all_reduce(x, group=self.group)
         else:
             self.graphs[num_tokens].replay()
